@@ -1,0 +1,13 @@
+[package]
+name = "thefmt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+markdown = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+indoc = "2"
+predicates = "3"
+tempfile = "3"
