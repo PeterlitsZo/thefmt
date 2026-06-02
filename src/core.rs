@@ -98,19 +98,35 @@ fn render_blocks(children: &[Node]) -> String {
 }
 
 fn render_root_blocks(children: &[Node]) -> String {
-    children
-        .iter()
-        .enumerate()
-        .map(|(index, child)| match child {
+    let mut output = String::new();
+    let mut previous: Option<&Node> = None;
+
+    for (index, child) in children.iter().enumerate() {
+        let block = match child {
             Node::Paragraph(paragraph) => render_wrapped_paragraph(&paragraph.children, "", ""),
             Node::ThematicBreak(_) if thematic_break_should_expand(children, index) => {
                 "-".repeat(MAX_LINE_WIDTH)
             }
             _ => render_node(child),
-        })
-        .filter(|block| !block.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+        };
+
+        if block.is_empty() {
+            continue;
+        }
+
+        if let Some(previous) = previous {
+            output.push_str(if should_compact_root_blocks(previous, child) {
+                "\n"
+            } else {
+                "\n\n"
+            });
+        }
+
+        output.push_str(&block);
+        previous = Some(child);
+    }
+
+    output
 }
 
 fn render_inlines(children: &[Node]) -> String {
@@ -382,7 +398,8 @@ struct BreakPoint {
 struct LineState {
     parts: Vec<LinePart>,
     width: usize,
-    last_break: Option<BreakPoint>,
+    last_space_break: Option<BreakPoint>,
+    last_char_break: Option<BreakPoint>,
 }
 
 fn render_wrapped_paragraph(children: &[Node], first_prefix: &str, continuation_prefix: &str) -> String {
@@ -398,8 +415,13 @@ fn render_inline_fragments(children: &[Node]) -> Vec<InlineFragment> {
     children
         .iter()
         .filter_map(|child| match child {
-            Node::Text(text) if !text.value.is_empty() => {
-                Some(InlineFragment::BreakableText(text.value.clone()))
+            Node::Text(text) => {
+                let normalized = normalize_breakable_text(&text.value);
+                if normalized.is_empty() {
+                    None
+                } else {
+                    Some(InlineFragment::BreakableText(normalized))
+                }
             }
             _ => {
                 let rendered = render_node(child);
@@ -411,6 +433,25 @@ fn render_inline_fragments(children: &[Node]) -> Vec<InlineFragment> {
             }
         })
         .collect()
+}
+
+fn normalize_breakable_text(text: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_space = false;
+
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            normalized.push(ch);
+            last_was_space = false;
+        }
+    }
+
+    normalized
 }
 
 fn wrap_fragments(fragments: &[InlineFragment], first_prefix: &str, continuation_prefix: &str) -> String {
@@ -465,7 +506,7 @@ fn append_breakable_char<'a>(
         return;
     }
 
-    if let Some(breakpoint) = line.last_break {
+    if let Some(breakpoint) = choose_breakpoint(line) {
         let remainder = split_line_at_breakpoint(line, breakpoint);
         flush_line(lines, line, current_prefix);
         *current_prefix = continuation_prefix;
@@ -519,11 +560,17 @@ fn push_breakable_char(line: &mut LineState, ch: char, char_width: usize) {
     }
 
     line.width += char_width;
+    let part_index = line.parts.len() - 1;
+    let byte_index = line.parts[part_index].text.len();
+    if can_break_after_char(ch) {
+        line.last_char_break = Some(BreakPoint {
+            part_index,
+            byte_index,
+        });
+    }
 
     if ch == ' ' {
-        let part_index = line.parts.len() - 1;
-        let byte_index = line.parts[part_index].text.len();
-        line.last_break = Some(BreakPoint {
+        line.last_space_break = Some(BreakPoint {
             part_index,
             byte_index,
         });
@@ -578,8 +625,14 @@ fn build_line_state(parts: Vec<LinePart>) -> LineState {
             for ch in part.text.chars() {
                 byte_index += ch.len_utf8();
                 line.width += UnicodeWidthChar::width(ch).unwrap_or(0);
+                if can_break_after_char(ch) {
+                    line.last_char_break = Some(BreakPoint {
+                        part_index,
+                        byte_index,
+                    });
+                }
                 if ch == ' ' {
-                    line.last_break = Some(BreakPoint {
+                    line.last_space_break = Some(BreakPoint {
                         part_index,
                         byte_index,
                     });
@@ -616,6 +669,23 @@ fn render_line_parts(parts: &[LinePart]) -> String {
     content
 }
 
+fn choose_breakpoint(line: &LineState) -> Option<BreakPoint> {
+    match (line.last_space_break, line.last_char_break) {
+        (Some(space), Some(character)) if breakpoint_precedes(space, character) => Some(character),
+        (Some(space), _) => Some(space),
+        (None, Some(character)) => Some(character),
+        (None, None) => None,
+    }
+}
+
+fn breakpoint_precedes(left: BreakPoint, right: BreakPoint) -> bool {
+    (left.part_index, left.byte_index) < (right.part_index, right.byte_index)
+}
+
+fn can_break_after_char(ch: char) -> bool {
+    !ch.is_whitespace() && UnicodeWidthChar::width(ch).unwrap_or(0) > 1
+}
+
 fn render_prefixed_block(block: &str, first_prefix: &str, continuation_prefix: &str) -> String {
     let mut lines = block.lines();
     let mut output = match lines.next() {
@@ -634,4 +704,8 @@ fn render_prefixed_block(block: &str, first_prefix: &str, continuation_prefix: &
     }
 
     output
+}
+
+fn should_compact_root_blocks(previous: &Node, current: &Node) -> bool {
+    matches!(previous, Node::Definition(_)) && matches!(current, Node::Definition(_))
 }
