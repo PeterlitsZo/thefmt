@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 markdown = "1"
+unicode-width = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"

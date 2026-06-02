@@ -1,68 +1,30 @@
-use indoc::indoc;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use thefmt::format_markdown;
 
 #[test]
-fn formats_common_block_and_inline_markdown() {
-    let input = indoc! {r#"
-        # Title
+fn formats_each_testcase() {
+    for testcase_dir in testcase_dirs("tests/testcases") {
+        let before = read_testcase_file(&testcase_dir, "before.md");
+        let after = read_testcase_file(&testcase_dir, "after.md");
 
-        Hello *em* and **strong** with [link](https://example.com).
+        let formatted = format_markdown(&before).unwrap();
 
-        > quoted
-
-        - one
-        - two
-
-        ```rust
-        fn main() {}
-        ```
-
-        ---
-    "#}
-    .trim_end();
-
-    let formatted = format_markdown(input).unwrap();
-
-    assert_eq!(
-        formatted,
-        indoc! {r#"
-            # Title
-
-            Hello *em* and **strong** with [link](https://example.com).
-
-            > quoted
-
-            - one
-            - two
-
-            ```rust
-            fn main() {}
-            ```
-
-            ---
-        "#}
-    );
+        assert_eq!(formatted, after, "testcase: {}", testcase_dir.display());
+    }
 }
 
-#[test]
-fn formats_images_inline_code_and_hard_breaks() {
-    let input = indoc! {r#"
-        ![alt](image.png "title")
+fn testcase_dirs(root: impl AsRef<Path>) -> Vec<PathBuf> {
+    let mut dirs = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    dirs
+}
 
-        Use `code`.\
-        Next line.
-    "#}
-    .trim_end();
-
-    let formatted = format_markdown(input).unwrap();
-
-    assert_eq!(
-        formatted,
-        indoc! {r#"
-            ![alt](image.png "title")
-
-            Use `code`.\
-            Next line.
-        "#}
-    );
+fn read_testcase_file(testcase_dir: &Path, name: &str) -> String {
+    fs::read_to_string(testcase_dir.join(name)).unwrap()
 }

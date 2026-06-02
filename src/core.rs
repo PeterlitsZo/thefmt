@@ -1,9 +1,9 @@
 use crate::error::Error;
 use markdown::mdast::{AlignKind, Node, ReferenceKind};
+use unicode_width::UnicodeWidthStr;
 
 pub fn format_markdown(input: &str) -> Result<String, Error> {
-    let mdast =
-        markdown::to_mdast(input, &markdown::ParseOptions::default()).map_err(Error::Parse)?;
+    let mdast = markdown::to_mdast(input, &markdown::ParseOptions::gfm()).map_err(Error::Parse)?;
     let mut output = render_node(&mdast);
 
     if !output.is_empty() && !output.ends_with('\n') {
@@ -72,7 +72,7 @@ fn render_node(node: &Node) -> String {
         }
         Node::Table(table) => render_table(&table.children, &table.align),
         Node::ThematicBreak(_) => "---".to_string(),
-        Node::TableRow(row) => render_table_row(&row.children),
+        Node::TableRow(row) => render_unpadded_table_row(&row.children),
         Node::TableCell(cell) => render_inlines(&cell.children),
         Node::ListItem(item) => render_blocks(&item.children),
         Node::Definition(definition) => {
@@ -192,23 +192,37 @@ fn render_reference(label: &str, identifier: &str, reference_kind: ReferenceKind
 }
 
 fn render_table(children: &[Node], align: &[AlignKind]) -> String {
-    let rows = children.iter().map(render_node).collect::<Vec<_>>();
+    let rows = children
+        .iter()
+        .filter_map(|child| match child {
+            Node::TableRow(row) => Some(render_table_cells(&row.children)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     if rows.is_empty() {
         return String::new();
     }
 
-    let separator = align
-        .iter()
-        .map(|align| match align {
-            AlignKind::Left => ":---",
-            AlignKind::Right => "---:",
-            AlignKind::Center => ":---:",
-            AlignKind::None => "---",
+    let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths = (0..column_count)
+        .map(|index| {
+            rows.iter()
+                .filter_map(|row| row.get(index))
+                .map(|cell| cell_display_width(cell))
+                .max()
+                .unwrap_or(0)
+                .max(3)
+        })
+        .collect::<Vec<_>>();
+
+    let separator = (0..column_count)
+        .map(|index| {
+            render_separator_cell(widths[index], align.get(index).unwrap_or(&AlignKind::None))
         })
         .collect::<Vec<_>>()
         .join(" | ");
 
-    let mut output = rows[0].clone();
+    let mut output = render_table_row(&rows[0], &widths);
     output.push('\n');
     output.push_str("| ");
     output.push_str(&separator);
@@ -216,13 +230,37 @@ fn render_table(children: &[Node], align: &[AlignKind]) -> String {
 
     for row in rows.iter().skip(1) {
         output.push('\n');
-        output.push_str(row);
+        output.push_str(&render_table_row(row, &widths));
     }
 
     output
 }
 
-fn render_table_row(children: &[Node]) -> String {
+fn render_table_cells(children: &[Node]) -> Vec<String> {
+    children
+        .iter()
+        .map(|child| match child {
+            Node::TableCell(cell) => render_inlines(&cell.children),
+            _ => render_node(child),
+        })
+        .collect()
+}
+
+fn render_table_row(cells: &[String], widths: &[usize]) -> String {
+    let padded = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let cell = cells.get(index).map(String::as_str).unwrap_or("");
+            pad_cell(cell, *width)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    format!("| {padded} |")
+}
+
+fn render_unpadded_table_row(children: &[Node]) -> String {
     format!(
         "| {} |",
         children
@@ -231,6 +269,24 @@ fn render_table_row(children: &[Node]) -> String {
             .collect::<Vec<_>>()
             .join(" | ")
     )
+}
+
+fn render_separator_cell(width: usize, align: &AlignKind) -> String {
+    match align {
+        AlignKind::Left => format!(":{}", "-".repeat(width.saturating_sub(1).max(2))),
+        AlignKind::Right => format!("{}:", "-".repeat(width.saturating_sub(1).max(2))),
+        AlignKind::Center => format!(":{}:", "-".repeat(width.saturating_sub(2).max(1))),
+        AlignKind::None => "-".repeat(width.max(3)),
+    }
+}
+
+fn pad_cell(cell: &str, width: usize) -> String {
+    let padding = width.saturating_sub(cell_display_width(cell));
+    format!("{cell}{}", " ".repeat(padding))
+}
+
+fn cell_display_width(cell: &str) -> usize {
+    UnicodeWidthStr::width(cell)
 }
 
 fn trim_trailing_newlines(value: &str) -> &str {
