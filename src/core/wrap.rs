@@ -3,28 +3,38 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{render_inlines, render_node, MAX_LINE_WIDTH};
 
+const PREFERRED_SOFT_BREAK_SLACK: usize = 2;
+
 #[derive(Clone)]
 enum InlineFragment {
-    BreakableText(String),
+    BreakableText(Vec<BreakableUnit>),
     Atomic(String),
 }
 
 #[derive(Clone)]
-struct LinePart {
-    text: String,
-    breakable: bool,
+enum LinePart {
+    Breakable(Vec<BreakableUnit>),
+    Atomic(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BreakableUnit {
+    Visible(char),
+    SoftBreak { preferred: bool },
 }
 
 #[derive(Clone, Copy)]
 struct BreakPoint {
     part_index: usize,
-    byte_index: usize,
+    unit_index: usize,
+    width: usize,
 }
 
 #[derive(Default)]
 struct LineState {
     parts: Vec<LinePart>,
     width: usize,
+    last_preferred_break: Option<BreakPoint>,
     last_space_break: Option<BreakPoint>,
     last_char_break: Option<BreakPoint>,
 }
@@ -69,9 +79,14 @@ pub(super) fn render_prefixed_block(
 fn render_inline_fragments(children: &[Node]) -> Vec<InlineFragment> {
     children
         .iter()
-        .filter_map(|child| match child {
+        .enumerate()
+        .filter_map(|(index, child)| match child {
             Node::Text(text) => {
-                let normalized = normalize_breakable_text(&text.value);
+                let normalized = normalize_breakable_text(
+                    &text.value,
+                    previous_visible_char(children, index),
+                    next_visible_char(children, index),
+                );
                 if normalized.is_empty() {
                     None
                 } else {
@@ -90,23 +105,99 @@ fn render_inline_fragments(children: &[Node]) -> Vec<InlineFragment> {
         .collect()
 }
 
-fn normalize_breakable_text(text: &str) -> String {
-    let mut normalized = String::new();
-    let mut last_was_space = false;
+fn normalize_breakable_text(
+    text: &str,
+    previous_context: Option<char>,
+    next_context: Option<char>,
+) -> Vec<BreakableUnit> {
+    let mut normalized = Vec::new();
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut index = 0;
 
-    for ch in text.chars() {
+    while index < chars.len() {
+        let ch = chars[index];
         if ch.is_whitespace() {
-            if !last_was_space {
-                normalized.push(' ');
-                last_was_space = true;
+            let whitespace_start = index;
+            let previous = normalized
+                .iter()
+                .rev()
+                .find_map(|unit| match unit {
+                    BreakableUnit::Visible(ch) => Some(*ch),
+                    BreakableUnit::SoftBreak { .. } => None,
+                })
+                .or(previous_context);
+            let next = chars[index + 1..]
+                .iter()
+                .copied()
+                .find(|candidate| !candidate.is_whitespace())
+                .or(next_context);
+
+            if previous.is_some() && next.is_some() {
+                if should_preserve_soft_break_space(previous, next) {
+                    if !matches!(normalized.last(), Some(BreakableUnit::Visible(' '))) {
+                        normalized.push(BreakableUnit::Visible(' '));
+                    }
+                } else if !matches!(normalized.last(), Some(BreakableUnit::SoftBreak { .. })) {
+                    let contains_newline = chars[whitespace_start..]
+                        .iter()
+                        .take_while(|candidate| candidate.is_whitespace())
+                        .any(|candidate| matches!(candidate, '\n' | '\r'));
+                    let preferred = contains_newline
+                        && matches!(
+                            (previous, next),
+                            (Some(previous), Some(next))
+                                if is_likely_cjk_clause_boundary(previous, next)
+                        );
+                    normalized.push(BreakableUnit::SoftBreak { preferred });
+                }
+            }
+
+            while index + 1 < chars.len() && chars[index + 1].is_whitespace() {
+                index += 1;
             }
         } else {
-            normalized.push(ch);
-            last_was_space = false;
+            normalized.push(BreakableUnit::Visible(ch));
         }
+
+        index += 1;
     }
 
     normalized
+}
+
+fn previous_visible_char(children: &[Node], index: usize) -> Option<char> {
+    children[..index].iter().rev().find_map(last_visible_char)
+}
+
+fn next_visible_char(children: &[Node], index: usize) -> Option<char> {
+    children[index + 1..].iter().find_map(first_visible_char)
+}
+
+fn first_visible_char(node: &Node) -> Option<char> {
+    render_node(node).chars().find(|ch| !ch.is_whitespace())
+}
+
+fn last_visible_char(node: &Node) -> Option<char> {
+    render_node(node)
+        .chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+}
+
+fn should_preserve_soft_break_space(previous: Option<char>, next: Option<char>) -> bool {
+    match (previous, next) {
+        (Some(previous), Some(next)) => !(is_cjk_word_char(previous) && is_cjk_word_char(next)),
+        _ => false,
+    }
+}
+
+fn is_cjk_word_char(ch: char) -> bool {
+    UnicodeWidthChar::width(ch).unwrap_or(0) > 1 && ch.is_alphanumeric()
+}
+
+// Prefer source line breaks that already sit on common Chinese phrase boundaries.
+fn is_likely_cjk_clause_boundary(previous: char, next: char) -> bool {
+    matches!(previous, '的' | '地' | '得') || matches!(next, '来' | '去' | '并' | '再' | '将')
 }
 
 fn wrap_fragments(
@@ -121,13 +212,13 @@ fn wrap_fragments(
     for fragment in fragments {
         match fragment {
             InlineFragment::BreakableText(text) => {
-                for ch in text.chars() {
-                    append_breakable_char(
+                for unit in text {
+                    append_breakable_unit(
                         &mut lines,
                         &mut line,
                         &mut current_prefix,
                         continuation_prefix,
-                        ch,
+                        *unit,
                     );
                 }
             }
@@ -146,22 +237,27 @@ fn wrap_fragments(
     lines.join("\n")
 }
 
-fn append_breakable_char<'a>(
+fn append_breakable_unit<'a>(
     lines: &mut Vec<String>,
     line: &mut LineState,
     current_prefix: &mut &'a str,
     continuation_prefix: &'a str,
-    ch: char,
+    unit: BreakableUnit,
 ) {
-    if line.width == 0 && ch == ' ' {
+    if line.width == 0
+        && matches!(
+            unit,
+            BreakableUnit::Visible(' ') | BreakableUnit::SoftBreak { .. }
+        )
+    {
         return;
     }
 
-    let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    let char_width = breakable_unit_width(unit);
     let prefix_width = UnicodeWidthStr::width(*current_prefix);
 
     if prefix_width + line.width + char_width <= MAX_LINE_WIDTH || line.width == 0 {
-        push_breakable_char(line, ch, char_width);
+        push_breakable_unit(line, unit, char_width);
         return;
     }
 
@@ -170,13 +266,13 @@ fn append_breakable_char<'a>(
         flush_line(lines, line, current_prefix);
         *current_prefix = continuation_prefix;
         *line = remainder;
-        append_breakable_char(lines, line, current_prefix, continuation_prefix, ch);
+        append_breakable_unit(lines, line, current_prefix, continuation_prefix, unit);
         return;
     }
 
     flush_line(lines, line, current_prefix);
     *current_prefix = continuation_prefix;
-    append_breakable_char(lines, line, current_prefix, continuation_prefix, ch);
+    append_breakable_unit(lines, line, current_prefix, continuation_prefix, unit);
 }
 
 fn append_atomic_fragment<'a>(
@@ -194,44 +290,44 @@ fn append_atomic_fragment<'a>(
         *current_prefix = continuation_prefix;
     }
 
-    line.parts.push(LinePart {
-        text: text.to_string(),
-        breakable: false,
-    });
+    line.parts.push(LinePart::Atomic(text.to_string()));
     line.width += text_width;
 }
 
-fn push_breakable_char(line: &mut LineState, ch: char, char_width: usize) {
+fn push_breakable_unit(line: &mut LineState, unit: BreakableUnit, char_width: usize) {
     if let Some(last) = line.parts.last_mut() {
-        if last.breakable {
-            last.text.push(ch);
+        if let LinePart::Breakable(units) = last {
+            units.push(unit);
         } else {
-            line.parts.push(LinePart {
-                text: ch.to_string(),
-                breakable: true,
-            });
+            line.parts.push(LinePart::Breakable(vec![unit]));
         }
     } else {
-        line.parts.push(LinePart {
-            text: ch.to_string(),
-            breakable: true,
-        });
+        line.parts.push(LinePart::Breakable(vec![unit]));
     }
 
     line.width += char_width;
     let part_index = line.parts.len() - 1;
-    let byte_index = line.parts[part_index].text.len();
-    if can_break_after_char(ch) {
+    let unit_index = breakable_part_len(&line.parts[part_index]);
+    if let BreakableUnit::SoftBreak { preferred: true } = unit {
+        line.last_preferred_break = Some(BreakPoint {
+            part_index,
+            unit_index,
+            width: line.width,
+        });
+    }
+    if can_break_after_unit(unit) {
         line.last_char_break = Some(BreakPoint {
             part_index,
-            byte_index,
+            unit_index,
+            width: line.width,
         });
     }
 
-    if ch == ' ' {
+    if unit == BreakableUnit::Visible(' ') {
         line.last_space_break = Some(BreakPoint {
             part_index,
-            byte_index,
+            unit_index,
+            width: line.width,
         });
     }
 }
@@ -246,23 +342,18 @@ fn split_line_at_breakpoint(line: &mut LineState, breakpoint: BreakPoint) -> Lin
             continue;
         }
 
-        if index == breakpoint.part_index {
-            let head = &part.text[..breakpoint.byte_index];
-            if !head.is_empty() {
-                left_parts.push(LinePart {
-                    text: head.to_string(),
-                    breakable: part.breakable,
-                });
+        match part {
+            LinePart::Breakable(units) if index == breakpoint.part_index => {
+                let head = units[..breakpoint.unit_index].to_vec();
+                if !head.is_empty() {
+                    left_parts.push(LinePart::Breakable(head));
+                }
+                let tail = units[breakpoint.unit_index..].to_vec();
+                if !tail.is_empty() {
+                    remainder_parts.push(LinePart::Breakable(tail));
+                }
             }
-            let tail = &part.text[breakpoint.byte_index..];
-            if !tail.is_empty() {
-                remainder_parts.push(LinePart {
-                    text: tail.to_string(),
-                    breakable: part.breakable,
-                });
-            }
-        } else {
-            remainder_parts.push(part.clone());
+            _ => remainder_parts.push(part.clone()),
         }
     }
 
@@ -274,31 +365,41 @@ fn build_line_state(parts: Vec<LinePart>) -> LineState {
     let mut line = LineState::default();
 
     for part in parts {
-        if part.text.is_empty() {
+        if line_part_is_empty(&part) {
             continue;
         }
 
         let part_index = line.parts.len();
-        if part.breakable {
-            let mut byte_index = 0;
-            for ch in part.text.chars() {
-                byte_index += ch.len_utf8();
-                line.width += UnicodeWidthChar::width(ch).unwrap_or(0);
-                if can_break_after_char(ch) {
-                    line.last_char_break = Some(BreakPoint {
-                        part_index,
-                        byte_index,
-                    });
-                }
-                if ch == ' ' {
-                    line.last_space_break = Some(BreakPoint {
-                        part_index,
-                        byte_index,
-                    });
+        match &part {
+            LinePart::Breakable(units) => {
+                for (unit_index, unit) in units.iter().copied().enumerate() {
+                    line.width += breakable_unit_width(unit);
+                    if let BreakableUnit::SoftBreak { preferred: true } = unit {
+                        line.last_preferred_break = Some(BreakPoint {
+                            part_index,
+                            unit_index: unit_index + 1,
+                            width: line.width,
+                        });
+                    }
+                    if can_break_after_unit(unit) {
+                        line.last_char_break = Some(BreakPoint {
+                            part_index,
+                            unit_index: unit_index + 1,
+                            width: line.width,
+                        });
+                    }
+                    if unit == BreakableUnit::Visible(' ') {
+                        line.last_space_break = Some(BreakPoint {
+                            part_index,
+                            unit_index: unit_index + 1,
+                            width: line.width,
+                        });
+                    }
                 }
             }
-        } else {
-            line.width += UnicodeWidthStr::width(part.text.as_str());
+            LinePart::Atomic(text) => {
+                line.width += UnicodeWidthStr::width(text.as_str());
+            }
         }
 
         line.parts.push(part);
@@ -307,21 +408,34 @@ fn build_line_state(parts: Vec<LinePart>) -> LineState {
     line
 }
 
-fn flush_line(lines: &mut Vec<String>, line: &mut LineState, prefix: &str) {
-    let content = render_line_parts(&line.parts);
-    if content.is_empty() {
-        return;
+fn line_part_is_empty(part: &LinePart) -> bool {
+    match part {
+        LinePart::Breakable(units) => units.is_empty(),
+        LinePart::Atomic(text) => text.is_empty(),
     }
+}
 
-    lines.push(format!("{prefix}{content}"));
-    *line = LineState::default();
+fn breakable_part_len(part: &LinePart) -> usize {
+    match part {
+        LinePart::Breakable(units) => units.len(),
+        LinePart::Atomic(_) => 0,
+    }
 }
 
 fn render_line_parts(parts: &[LinePart]) -> String {
-    let mut content = parts
-        .iter()
-        .map(|part| part.text.as_str())
-        .collect::<String>();
+    let mut content = String::new();
+    for part in parts {
+        match part {
+            LinePart::Breakable(units) => {
+                for unit in units {
+                    if let BreakableUnit::Visible(ch) = unit {
+                        content.push(*ch);
+                    }
+                }
+            }
+            LinePart::Atomic(text) => content.push_str(text),
+        }
+    }
     while content.ends_with(' ') {
         content.pop();
     }
@@ -329,6 +443,12 @@ fn render_line_parts(parts: &[LinePart]) -> String {
 }
 
 fn choose_breakpoint(line: &LineState) -> Option<BreakPoint> {
+    if let Some(preferred) = line.last_preferred_break {
+        if line.width.saturating_sub(preferred.width) <= PREFERRED_SOFT_BREAK_SLACK {
+            return Some(preferred);
+        }
+    }
+
     match (line.last_space_break, line.last_char_break) {
         (Some(space), Some(character)) if breakpoint_precedes(space, character) => Some(character),
         (Some(space), _) => Some(space),
@@ -338,9 +458,26 @@ fn choose_breakpoint(line: &LineState) -> Option<BreakPoint> {
 }
 
 fn breakpoint_precedes(left: BreakPoint, right: BreakPoint) -> bool {
-    (left.part_index, left.byte_index) < (right.part_index, right.byte_index)
+    (left.part_index, left.unit_index) < (right.part_index, right.unit_index)
 }
 
-fn can_break_after_char(ch: char) -> bool {
-    !ch.is_whitespace() && UnicodeWidthChar::width(ch).unwrap_or(0) > 1
+fn can_break_after_unit(unit: BreakableUnit) -> bool {
+    matches!(unit, BreakableUnit::SoftBreak { .. })
+        || matches!(unit, BreakableUnit::Visible(ch) if !ch.is_whitespace() && UnicodeWidthChar::width(ch).unwrap_or(0) > 1)
+}
+
+fn breakable_unit_width(unit: BreakableUnit) -> usize {
+    match unit {
+        BreakableUnit::Visible(ch) => UnicodeWidthChar::width(ch).unwrap_or(0),
+        BreakableUnit::SoftBreak { .. } => 0,
+    }
+}
+fn flush_line(lines: &mut Vec<String>, line: &mut LineState, prefix: &str) {
+    let content = render_line_parts(&line.parts);
+    if content.is_empty() {
+        return;
+    }
+
+    lines.push(format!("{prefix}{content}"));
+    *line = LineState::default();
 }

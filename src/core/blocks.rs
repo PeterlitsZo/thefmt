@@ -138,8 +138,7 @@ fn render_list_item(node: &Node, marker: &str, base_prefix: &str) -> String {
 
 fn thematic_break_should_expand(children: &[Node], index: usize) -> bool {
     let previous = index.checked_sub(1).and_then(|idx| children.get(idx));
-    let next = children.get(index + 1);
-    matches!(previous, Some(Node::List(_))) && matches!(next, Some(Node::List(_)))
+    matches!(previous, Some(Node::List(_)))
 }
 
 fn should_insert_blank_line_between_blocks(previous: &Node, current: &Node) -> bool {

@@ -30,7 +30,9 @@ fn render_node(node: &Node) -> String {
             )
         }
         Node::MdxJsxFlowElement(element) => blocks::render_blocks(&element.children),
-        Node::List(list) => blocks::render_list(&list.children, list.ordered, list.start, list.spread, ""),
+        Node::List(list) => {
+            blocks::render_list(&list.children, list.ordered, list.start, list.spread, "")
+        }
         Node::MdxjsEsm(esm) => esm.value.clone(),
         Node::Toml(toml) => format!("+++\n{}\n+++", trim_trailing_newlines(&toml.value)),
         Node::Yaml(yaml) => format!("---\n{}\n---", trim_trailing_newlines(&yaml.value)),
