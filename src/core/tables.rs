@@ -3,11 +3,11 @@ use unicode_width::UnicodeWidthStr;
 
 use super::{render_inlines, render_node};
 
-pub(super) fn render_table(children: &[Node], align: &[AlignKind]) -> String {
+pub(super) fn render_table(children: &[Node], align: &[AlignKind], input: &str) -> String {
     let rows = children
         .iter()
         .filter_map(|child| match child {
-            Node::TableRow(row) => Some(render_table_cells(&row.children)),
+            Node::TableRow(row) => Some(render_table_cells(&row.children, input)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -48,23 +48,23 @@ pub(super) fn render_table(children: &[Node], align: &[AlignKind]) -> String {
     output
 }
 
-pub(super) fn render_unpadded_table_row(children: &[Node]) -> String {
+pub(super) fn render_unpadded_table_row(children: &[Node], input: &str) -> String {
     format!(
         "| {} |",
         children
             .iter()
-            .map(render_node)
+            .map(|child| render_node(child, input))
             .collect::<Vec<_>>()
             .join(" | ")
     )
 }
 
-fn render_table_cells(children: &[Node]) -> Vec<String> {
+fn render_table_cells(children: &[Node], input: &str) -> Vec<String> {
     children
         .iter()
         .map(|child| match child {
-            Node::TableCell(cell) => render_inlines(&cell.children),
-            _ => render_node(child),
+            Node::TableCell(cell) => render_inlines(&cell.children, input),
+            _ => render_node(child, input),
         })
         .collect()
 }

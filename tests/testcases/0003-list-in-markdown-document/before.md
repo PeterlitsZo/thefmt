@@ -64,3 +64,80 @@
 - 新增市场数据能力，支持股票列表、股票搜索和指数批量查询。
 - 新增自选能力，支持添加、移除和列表查询。
 - 新增运行与观测基础能力，提供健康检查、指标、请求日志、追踪日志和告警能力。
+
+---
+
+## 如何使用
+
+你可以按自己的工作方式来使用本仓库中的规范。常见方式如下：
+
+1. 直接参考本文档。
+
+   适合先快速了解整体规范的时候。你可以直接阅读 `README.md`，并在需要时继续查看
+   `refs/` 下更细的参考文档。
+
+2. 安装 `project-bootstrap` skill。
+
+   - **让 AI 帮忙安装**：
+     在你喜欢的 AI CLI 对话框中复制如下指令并回车：
+
+     ```text
+     现在你需要帮助用户安装 project-guide 提供的 skills。请严格参考如下步骤：
+
+     - 询问用户在哪里克隆 `project-guide` 项目？例如 `~/Project/ft/project-guide/` 等。
+     - 使用 `git@code.non-convex.com:hfrc/open/project-guide.git` 完成克隆。
+     - 将项目的 `skills/project-bootstrap` 创建软链接到你的 skills 目录：
+       - 如果你是 Codex，则是 `~/.codex/skills/`。
+       - 如果你是 Claude Code，则是 `~/.claude/skills/`。
+     - 告知你的用户已经完成安装。
+     ```
+
+   - **手动安装**：
+
+     假设你的 Codex skills 目录是默认值 `~/.codex/skills`，那么可以执行：
+
+     ```bash
+     mkdir -p ~/.codex/skills
+     ln -s /path/to/project-guide/skills/project-bootstrap \
+       ~/.codex/skills/project-bootstrap
+     ```
+
+     如果你不想使用软链接，也可以直接复制目录（建议使用软链接，以使用 git pull
+     来及时更新 skill）：
+
+     ```bash
+     mkdir -p ~/.codex/skills
+     cp -R /path/to/project-guide/skills/project-bootstrap \
+       ~/.codex/skills/project-bootstrap
+     ```
+
+     安装后，重启 Codex，使其重新加载 skills。
+
+     重启后，可以在对话中直接点名使用这个 skill。例如：
+
+     ```text
+     请使用 project-bootstrap skill，帮我为一个 Rust 后端项目生成初始化方案。
+     ```
+
+     或者：
+
+     ```text
+     使用 project-bootstrap，为当前仓库补齐 AGENTS.md、CHANGELOG.md 和
+     CONTRIBUTING.md 草案。
+     ```
+
+     如果你的目标比较明确，建议在提问时一并说明项目类型、是否是新仓库、希望直接
+     生成哪些文件。这样 skill 会更容易给出可执行的初始化结果。
+
+---
+
+- 项目概览。本节需要给出项目大体目的。包括项目的目的、项目想要解决的问题等。
+- 项目结构。告知 AI 本项目是如何被组织的。这个能帮助 AI 快速定位到问题所在的文
+  件。
+- 让 AI 阅读 `CONTRIBUTING.md`，让它知晓如何贡献。
+- 行为规范和开发提示。告知 AI 如何参与本项目。例如哪些行为是明确禁止的，开发前后
+  应该执行什么。这里一些是所有项目通用的规则，一些则和项目本身有关系。对于一些操
+  作有着严格的操作顺序时，则尽可能写明白点。
+- 推送规范。建议在本节中告知如何编写 Git 提交消息、在提交前应该怎么做（例如，维
+  护 `CHANGELOG.md`）。
+- 交互提示。在本节中指出如何和用户交互。

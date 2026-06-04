@@ -9,7 +9,7 @@ pub(super) const MAX_LINE_WIDTH: usize = 80;
 
 pub fn format_markdown(input: &str) -> Result<String, Error> {
     let mdast = markdown::to_mdast(input, &markdown::ParseOptions::gfm()).map_err(Error::Parse)?;
-    let mut output = render_node(&mdast);
+    let mut output = render_node(&mdast, input);
 
     if !output.is_empty() && !output.ends_with('\n') {
         output.push('\n');
@@ -18,29 +18,34 @@ pub fn format_markdown(input: &str) -> Result<String, Error> {
     Ok(output)
 }
 
-fn render_node(node: &Node) -> String {
+fn render_node(node: &Node, input: &str) -> String {
     match node {
-        Node::Root(root) => blocks::render_root_blocks(&root.children),
-        Node::Blockquote(blockquote) => blocks::render_blockquote(&blockquote.children),
+        Node::Root(root) => blocks::render_root_blocks(&root.children, input),
+        Node::Blockquote(blockquote) => blocks::render_blockquote(&blockquote.children, input),
         Node::FootnoteDefinition(footnote) => {
             format!(
                 "[^{}]: {}",
                 footnote.identifier,
-                blocks::render_blocks(&footnote.children)
+                blocks::render_blocks(&footnote.children, input)
             )
         }
-        Node::MdxJsxFlowElement(element) => blocks::render_blocks(&element.children),
-        Node::List(list) => {
-            blocks::render_list(&list.children, list.ordered, list.start, list.spread, "")
-        }
+        Node::MdxJsxFlowElement(element) => blocks::render_blocks(&element.children, input),
+        Node::List(list) => blocks::render_list(
+            &list.children,
+            list.ordered,
+            list.start,
+            list.spread,
+            "",
+            input,
+        ),
         Node::MdxjsEsm(esm) => esm.value.clone(),
         Node::Toml(toml) => format!("+++\n{}\n+++", trim_trailing_newlines(&toml.value)),
         Node::Yaml(yaml) => format!("---\n{}\n---", trim_trailing_newlines(&yaml.value)),
         Node::Break(_) => "\\\n".to_string(),
         Node::InlineCode(code) => format!("`{}`", code.value),
         Node::InlineMath(math) => format!("${}$", math.value),
-        Node::Delete(delete) => format!("~~{}~~", render_inlines(&delete.children)),
-        Node::Emphasis(emphasis) => format!("*{}*", render_inlines(&emphasis.children)),
+        Node::Delete(delete) => format!("~~{}~~", render_inlines(&delete.children, input)),
+        Node::Emphasis(emphasis) => format!("*{}*", render_inlines(&emphasis.children, input)),
         Node::MdxTextExpression(expression) => format!("{{{}}}", expression.value),
         Node::FootnoteReference(reference) => format!("[^{}]", reference.identifier),
         Node::Html(html) => html.value.clone(),
@@ -52,18 +57,18 @@ fn render_node(node: &Node) -> String {
             &image.identifier,
             image.reference_kind,
         ),
-        Node::MdxJsxTextElement(element) => render_inlines(&element.children),
+        Node::MdxJsxTextElement(element) => render_inlines(&element.children, input),
         Node::Link(link) => render_resource(
-            &format!("[{}]", render_inlines(&link.children)),
+            &format!("[{}]", render_inlines(&link.children, input)),
             &link.url,
             &link.title,
         ),
         Node::LinkReference(link) => render_reference(
-            &format!("[{}]", render_inlines(&link.children)),
+            &format!("[{}]", render_inlines(&link.children, input)),
             &link.identifier,
             link.reference_kind,
         ),
-        Node::Strong(strong) => format!("**{}**", render_inlines(&strong.children)),
+        Node::Strong(strong) => format!("**{}**", render_inlines(&strong.children, input)),
         Node::Text(text) => text.value.clone(),
         Node::Code(code) => {
             render_code_block(code.lang.as_deref(), code.meta.as_deref(), &code.value)
@@ -74,14 +79,14 @@ fn render_node(node: &Node) -> String {
             format!(
                 "{} {}",
                 "#".repeat(heading.depth.into()),
-                render_inlines(&heading.children)
+                render_inlines(&heading.children, input)
             )
         }
-        Node::Table(table) => tables::render_table(&table.children, &table.align),
+        Node::Table(table) => tables::render_table(&table.children, &table.align, input),
         Node::ThematicBreak(_) => "---".to_string(),
-        Node::TableRow(row) => tables::render_unpadded_table_row(&row.children),
-        Node::TableCell(cell) => render_inlines(&cell.children),
-        Node::ListItem(item) => blocks::render_blocks(&item.children),
+        Node::TableRow(row) => tables::render_unpadded_table_row(&row.children, input),
+        Node::TableCell(cell) => render_inlines(&cell.children, input),
+        Node::ListItem(item) => blocks::render_blocks(&item.children, input),
         Node::Definition(definition) => {
             let mut output = format!("[{}]: {}", definition.identifier, definition.url);
             if let Some(title) = &definition.title {
@@ -89,12 +94,15 @@ fn render_node(node: &Node) -> String {
             }
             output
         }
-        Node::Paragraph(paragraph) => render_inlines(&paragraph.children),
+        Node::Paragraph(paragraph) => render_inlines(&paragraph.children, input),
     }
 }
 
-fn render_inlines(children: &[Node]) -> String {
-    children.iter().map(render_node).collect()
+fn render_inlines(children: &[Node], input: &str) -> String {
+    children
+        .iter()
+        .map(|child| render_node(child, input))
+        .collect()
 }
 
 fn render_code_block(lang: Option<&str>, meta: Option<&str>, value: &str) -> String {
