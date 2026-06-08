@@ -338,6 +338,16 @@ fn append_breakable_unit<'a>(
         return;
     }
 
+    if matches!(
+        unit,
+        BreakableUnit::Visible(' ') | BreakableUnit::SoftBreak { .. }
+    ) {
+        flush_line(lines, line, current_prefix);
+        *current_prefix = continuation_prefix;
+        append_breakable_unit(lines, line, current_prefix, continuation_prefix, unit);
+        return;
+    }
+
     if let Some(breakpoint) = choose_breakpoint(line, unit) {
         let remainder = split_line_at_breakpoint(line, breakpoint);
         flush_line(lines, line, current_prefix);

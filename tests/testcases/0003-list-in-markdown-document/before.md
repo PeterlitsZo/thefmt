@@ -148,3 +148,5 @@
   与前端构建信息，并同步更新接口文档。
 - 抽离系统信息生成逻辑到 `src/build_info.rs`，复用到系统接口返回值中。
 - 为可执行文件补充 `--version` 和 `build-info` 命令行输出。
+- 为 `app01_prod`、`*******_app` 和 `*******_app_test` 显式补充
+  `message_center` 配置，避免依赖默认值。
