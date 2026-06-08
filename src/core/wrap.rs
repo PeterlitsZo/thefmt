@@ -128,14 +128,11 @@ fn normalize_breakable_text(
                 .iter()
                 .take_while(|candidate| candidate.is_whitespace())
                 .any(|candidate| matches!(candidate, '\n' | '\r'));
-            let previous = normalized
-                .iter()
-                .rev()
-                .find_map(|unit| match unit {
-                    BreakableUnit::Visible(ch) => Some(*ch),
-                    BreakableUnit::ForcedBreak | BreakableUnit::SoftBreak { .. } => None,
-                })
-                .or(previous_context);
+            let previous_in_text = normalized.iter().rev().find_map(|unit| match unit {
+                BreakableUnit::Visible(ch) => Some(*ch),
+                BreakableUnit::ForcedBreak | BreakableUnit::SoftBreak { .. } => None,
+            });
+            let previous = previous_in_text.or(previous_context);
             let next = chars[index + 1..]
                 .iter()
                 .copied()
@@ -153,19 +150,26 @@ fn normalize_breakable_text(
                     if !matches!(normalized.last(), Some(BreakableUnit::ForcedBreak)) {
                         normalized.push(BreakableUnit::ForcedBreak);
                     }
+                } else if contains_newline
+                    && matches!(
+                        (previous, next),
+                        (Some(previous), Some(next))
+                            if should_prefer_cjk_source_break(
+                                previous,
+                                next,
+                                previous_in_text.is_some(),
+                            )
+                    )
+                {
+                    if !matches!(normalized.last(), Some(BreakableUnit::SoftBreak { .. })) {
+                        normalized.push(BreakableUnit::SoftBreak { preferred: true });
+                    }
                 } else if should_preserve_soft_break_space(previous, next) {
                     if !matches!(normalized.last(), Some(BreakableUnit::Visible(' '))) {
                         normalized.push(BreakableUnit::Visible(' '));
                     }
                 } else if !matches!(normalized.last(), Some(BreakableUnit::SoftBreak { .. })) {
-                    normalized.push(BreakableUnit::SoftBreak {
-                        preferred: contains_newline
-                            && matches!(
-                                (previous, next),
-                                (Some(previous), Some(next))
-                                    if should_prefer_cjk_source_break(previous, next)
-                            ),
-                    });
+                    normalized.push(BreakableUnit::SoftBreak { preferred: false });
                 }
             }
 
@@ -224,9 +228,45 @@ fn should_force_cjk_source_break(previous: char, next: char) -> bool {
     matches!(previous, '：' | '；' | '。' | '！' | '？')
 }
 
-// Prefer source line breaks that already sit on common Chinese phrase boundaries.
-fn should_prefer_cjk_source_break(previous: char, next: char) -> bool {
-    matches!(previous, '的' | '地' | '得') || matches!(next, '来' | '去' | '并' | '再' | '将')
+// Prefer source line breaks when they align with natural Chinese phrase boundaries.
+fn should_prefer_cjk_source_break(
+    previous: char,
+    next: char,
+    previous_is_in_same_text_node: bool,
+) -> bool {
+    source_break_enters_chinese_text(previous, next, previous_is_in_same_text_node)
+        || matches!(previous, '的' | '地' | '得')
+        || matches!(next, '来' | '去' | '并' | '再' | '将')
+}
+
+fn source_break_enters_chinese_text(
+    previous: char,
+    next: char,
+    previous_is_in_same_text_node: bool,
+) -> bool {
+    previous_is_in_same_text_node
+        && is_non_chinese_word_char(previous)
+        && is_chinese_character(next)
+}
+
+fn is_non_chinese_word_char(ch: char) -> bool {
+    !is_chinese_character(ch) && ch.is_alphanumeric()
+}
+
+fn is_chinese_character(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{2A6DF}'
+            | '\u{2A700}'..='\u{2B73F}'
+            | '\u{2B740}'..='\u{2B81F}'
+            | '\u{2B820}'..='\u{2CEAF}'
+            | '\u{2CEB0}'..='\u{2EBEF}'
+            | '\u{30000}'..='\u{3134F}'
+            | '\u{31350}'..='\u{323AF}'
+    )
 }
 
 fn wrap_fragments(
